@@ -7,6 +7,7 @@ typedef enum TileState {
     DEAD = 0, ALIVE = 1
 } TileState;
 
+// Logical board representation, storing an array of TileStates
 typedef struct Board {
     unsigned int nrows;
     unsigned int ncols;
@@ -19,16 +20,26 @@ typedef struct Point {
     unsigned int col;
 } Point;
 
+// TileChanges are stored in the simulation pass of each tick.
+// This allows for only the single linear pass, and then only the changes
+// made where necessary.
 typedef struct TileChange {
     Point point;
     TileState newState;
 } TileChange;
 
+// Node for TileChangeStack.  Would be declared in a different implementation
+// file if this were a multi-file project, because it's an implementation detail of
+// TileChangeStack.
 typedef struct TileChangeNode {
     TileChange change;
     struct TileChangeNode *next;
 } TileChangeNode;
 
+// Data structure for storing TileChanges during a tick.  In a multi-file project
+// this would be forward declared in a header and defined in a different
+// implementation file to enforce modularity, as its definition is an implementation
+// detail.
 typedef struct TileChangeStack {
     TileChangeNode *top;
 } TileChangeStack;
@@ -52,9 +63,13 @@ TileChange popTileChange(TileChangeStack *stack) {
     return result;
 }
 
+// State of the entire game, including both model and view.  This isn't an
+// ideal design, as it prevents some const qualifications.
 typedef struct GameState {
     Board logicalBoard;
+    // Where the physical curser points on the logical/physical board
     Point logicalCur;
+    // This window has an identical coordinate system to the logicalBoard
     WINDOW *physicalBoard;
     WINDOW *promptWin;
     unsigned int ticksPerSec;
@@ -98,6 +113,9 @@ void toggleTileState(GameState * const gameState) {
     wmove(gameState->physicalBoard, gameState->logicalCur.row, gameState->logicalCur.col);
 }
 
+// This function provides the interactive session where the user places tiles
+// on the board before the simulation.  Returns true if program should continue
+// to the next stage.
 bool setUpBoard(GameState * const gameState) {
     wprintw(gameState->promptWin, "Use arrow keys and spacebar to set tiles. Then press enter to continue.");
     wrefresh(gameState->promptWin);
@@ -148,6 +166,7 @@ bool setUpBoard(GameState * const gameState) {
     }
 }
 
+// Routine for prompting the user and getting a ticks/second value.
 bool getTicksPerSecond(GameState * const gameState) {
     wclear(gameState->promptWin);
     mvwprintw(gameState->promptWin, 0, 0, "Now type the desired ticks/sec and press enter to confirm: ");
@@ -174,6 +193,8 @@ bool getTicksPerSecond(GameState * const gameState) {
     }
 }
 
+// Determines whether a tile should flip, and if it should, pushes to
+// the pendingChanges field of the gameState parameter.
 void handleTile(GameState * const gameState, const unsigned int row, const unsigned int col) {
     TileState currentState = getTileState(&gameState->logicalBoard, row, col);
     unsigned int numAliveNeighbors = 0;
@@ -208,6 +229,7 @@ void handleTile(GameState * const gameState, const unsigned int row, const unsig
     }
 }
 
+// Performs the changes in the pendingChanges data structure.
 void doChanges(GameState * const gameState) {
     while (!tileChangeStackIsEmpty(&gameState->pendingChanges)) {
         TileChange change = popTileChange(&gameState->pendingChanges);
@@ -220,6 +242,8 @@ void doChanges(GameState * const gameState) {
     }
 }
 
+// First scan each tile for needed changes, and then go back and perform
+// the necessary changes.
 bool doTick(GameState * const gameState) {
     wclear(gameState->promptWin);
     mvwprintw(gameState->promptWin, 0, 0, "On tick %u", gameState->tick++);
@@ -243,11 +267,14 @@ void simulationLoop(GameState * const gameState) {
     const int period_us = 1000000 / gameState->ticksPerSec;
 
     while (doTick(gameState)) {
+        // This is an innaccurate way of getting n ticks/sec.  pthreads would
+        // be a better cross-platform way of doing this.
         usleep(period_us);
     }
 }
 
 int main(const int argc, const char * const argv[]) {
+    // Init ncurses
     initscr();
     noecho();
     cbreak();
@@ -269,6 +296,7 @@ int main(const int argc, const char * const argv[]) {
     box(boardWinBox, 0, 0);
     wrefresh(boardWinBox);
 
+    // Init game state
     GameState gameState;
     gameState.logicalBoard.ncols = maxX - 2;
     gameState.logicalBoard.nrows = maxY - 3;
@@ -283,18 +311,22 @@ int main(const int argc, const char * const argv[]) {
     gameState.tick = 0;
     gameState.pendingChanges.top = NULL;
 
+    // Have user select their tiles for the simulation
     bool shouldContinue = setUpBoard(&gameState);
     if (!shouldContinue) {
         goto quit;
     }
 
+    // Have user provide a target ticks/sec value
     shouldContinue = getTicksPerSecond(&gameState);
     if (!shouldContinue) {
         goto quit;
     }
 
+    // Perform the simulation until there are no changes in a tick.
     simulationLoop(&gameState);
 
+    // Exit
     wclear(gameState.promptWin);
     mvwprintw(gameState.promptWin, 0, 0, "Terminated after %d ticks.  Press 'q' to quit", gameState.tick + 1);
     wrefresh(gameState.promptWin);
